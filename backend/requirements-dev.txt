@@ -1,0 +1,5 @@
+-r requirements.txt
+pytest==9.0.3
+pytest-cov==6.2.1
+reportlab==4.4.3
+httpx2==2.10.0
