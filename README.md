@@ -1,6 +1,3 @@
-cd /Users/tokhirjon/Documents/Antimonopoliya
-
-cat > README.md <<'EOF'
 # Raqobat AI Assistant
 
 Raqobat qo‘mitasi rahbariyati va xodimlari uchun ishlab chiqilgan ichki axborot tizimi.
