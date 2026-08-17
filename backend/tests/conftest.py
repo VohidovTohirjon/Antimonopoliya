@@ -28,12 +28,12 @@ from app.database import Base, SessionLocal, engine
 from app.main import app
 from app.models import Role, User
 from app.security import hash_password
-from app.services.groq import groq
+from app.services.llm import llm
 
 
 @pytest.fixture(autouse=True)
 def clean_database(monkeypatch):
-    groq.reset_runtime_state()
+    llm.reset_runtime_state()
     engine.dispose()
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
@@ -53,7 +53,7 @@ def clean_database(monkeypatch):
     async def fake_generate_structured(system: str, user: str, schema: dict) -> dict:
         # Invoke the currently installed generator so per-test provider/error
         # monkeypatches still exercise the same degradation path.
-        raw = await groq.generate(system, user)
+        raw = await llm.generate(system, user)
         if "appeal_summary" in schema.get("properties", {}):
             return {
                 "subject": "Murojaatni ko‘rib chiqish natijalari haqida",
@@ -67,8 +67,8 @@ def clean_database(monkeypatch):
         cited = re.findall(r"\[(\d+)\]", raw)
         return {"answer_blocks": [{"text": re.sub(r"\s*\[[0-9, ]+\]", "", raw).strip(),
                                     "source_ids": [f"L{value}" for value in cited] or ["L1"]}]}
-    monkeypatch.setattr(groq, "generate", fake_generate)
-    monkeypatch.setattr(groq, "generate_structured", fake_generate_structured)
+    monkeypatch.setattr(llm, "generate", fake_generate)
+    monkeypatch.setattr(llm, "generate_structured", fake_generate_structured)
     with SessionLocal() as db:
         db.add_all([
             User(username="admin", full_name="Admin", password_hash=hash_password("Admin123!"), role=Role.administrator),
@@ -78,7 +78,7 @@ def clean_database(monkeypatch):
         ])
         db.commit()
     yield
-    groq.reset_runtime_state()
+    llm.reset_runtime_state()
     engine.dispose()
     Base.metadata.drop_all(engine)
 

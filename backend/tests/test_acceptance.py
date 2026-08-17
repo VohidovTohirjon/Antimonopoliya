@@ -17,7 +17,7 @@ from app.services.ai_agent import has_legal_intent
 from app.services.grounding import (extractive_legal_fallback,
                                     repair_document_citations, used_sources,
                                     validate_cited_answer, validate_legal_answer)
-from app.services.groq import groq
+from app.services.llm import llm
 from app.services.export import make_docx
 from app.services.rag import (_maintenance_penalty, _tokens, chunk_text,
                               filter_legal_topic, search)
@@ -193,7 +193,7 @@ def test_document_analysis_rejects_orphan_citations(client, xodim_headers, monke
     async def invented(_system: str, _user: str, **_options) -> str:
         return "Hujjatda 999 ta murojaat bor [99]."
 
-    monkeypatch.setattr(groq, "generate", invented)
+    monkeypatch.setattr(llm, "generate", invented)
     response = client.post(
         f"/api/documents/{item['id']}/analyze", headers=xodim_headers,
         json={"operation": "summary"},
@@ -353,7 +353,7 @@ def test_legal_intent_overrides_general_mode_and_citations_stay_mapped(
     async def citations_with_an_invalid_number(_system: str, _user: str, **_options) -> str:
         return "**12-modda** bo‘yicha rasmiy mezon topildi [1]. Uydirma manba [99]."
 
-    monkeypatch.setattr(groq, "generate", citations_with_an_invalid_number)
+    monkeypatch.setattr(llm, "generate", citations_with_an_invalid_number)
     response = client.post(
         "/api/chat", headers=xodim_headers,
         json={"question": "O‘zbekiston qonunchiligida ustun mavqe qaysi modda bilan belgilanadi?",
@@ -555,7 +555,7 @@ def test_grounded_draft_survives_generation_rate_limit(
     async def rate_limited(_system: str, _user: str, **_options) -> str:
         raise HTTPException(503, "AI xizmati so‘rovlar chegarasiga yetdi")
 
-    monkeypatch.setattr(groq, "generate", rate_limited)
+    monkeypatch.setattr(llm, "generate", rate_limited)
     response = client.post("/api/drafts", headers=xodim_headers, json={
         "kind": "response_letter", "instruction": "Huquqiy javob xati tayyorla",
         "document_id": document["id"],
@@ -650,7 +650,7 @@ def test_confidential_document_text_never_reaches_external_provider(
         calls.append(user)
         raise AssertionError("Maxfiy matn tashqi adapterga uzatildi")
 
-    monkeypatch.setattr(groq, "generate", forbidden_provider)
+    monkeypatch.setattr(llm, "generate", forbidden_provider)
     response = client.post(
         f"/api/documents/{item['id']}/analyze", headers=xodim_headers,
         json={"operation": "summary"},

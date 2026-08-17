@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..models import Chunk, NhhDocument, User
-from .groq import groq
+from .llm import llm
 from .legal_facts import deterministic_legal_fact_answer
 from .legal_intent import legal_concepts
 from .grounding import (article_label, extractive_document_fallback,
@@ -299,7 +299,7 @@ async def generate_grounded_legal(system: str, prompt: str,
                     "faqat berilgan manbalarga tayangan yangi to‘liq javob qaytaring:\n- "
                     + "\n- ".join(last_violations)
                 )
-            structured = await groq.generate_structured(
+            structured = await llm.generate_structured(
                 system + " Javobni answer_blocks tuzilmasida qaytaring. Har bir blokda faqat "
                 "manbada mavjud da'voni yozing va L1, L2 ko‘rinishidagi source_ids bering. "
                 "O‘zbek lotin yozuvida tabiiy va ixcham bayon qiling.",
@@ -364,7 +364,7 @@ async def generate_grounded_document(system: str, prompt: str,
                     "har bir fakt yoki xulosadan keyin mos [1] citation yozing:\n- "
                     + "\n- ".join(last_violations)
                 )
-            generated = await groq.generate(system, request, temperature=0.0)
+            generated = await llm.generate(system, request, temperature=0.0)
             generated = repair_document_citations(generated, sources)
             validation = validate_cited_answer(generated, sources)
             if validation.valid:
@@ -430,7 +430,7 @@ async def run_chat(db: Session, user: User, question: str, requested_legal: bool
     legal = requested_legal or inferred_legal
     routed = inferred_legal and not requested_legal
     if not legal:
-        answer = await groq.generate(
+        answer = await llm.generate(
             "Siz Raqobat qo‘mitasi ichki AI yordamchisisiz. O‘zbek lotin alifbosida qisqa va aniq "
             "javob bering. Fakt uydirmang. Normativ-huquqiy da’voni manbasiz tasdiqlangan fakt sifatida "
             "taqdim etmang.",
@@ -494,7 +494,7 @@ async def run_chat(db: Session, user: User, question: str, requested_legal: bool
     external_allowed = settings.allow_external_confidential_ai or not internal_source
     if deterministic:
         pass
-    elif settings.groq_api_key and settings.groq_model_list:
+    elif llm.configured:
         generation = await generate_grounded_legal(
             "Siz Raqobat qo‘mitasi huquqiy yordamchisisiz. Faqat berilgan NHH parchalariga "
             "tayangan holda, o‘zbek lotin alifbosida ixcham ro‘yxat shaklida javob bering. "

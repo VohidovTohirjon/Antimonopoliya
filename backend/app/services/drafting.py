@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from fastapi import HTTPException
 
 from ..models import Chunk
-from .groq import groq
+from .llm import llm
 from .rag import clean_excerpt, sources_from_chunks
 
 
@@ -201,7 +201,7 @@ async def create_response_letter(instruction: str, document_chunks: list[Chunk],
                 503,
                 "Maxfiy yoki ichki material tashqi AI xizmatiga yuborilmadi",
             )
-        structured = await groq.generate_structured(
+        structured = await llm.generate_structured(
             "Rasmiy javob xati tuzing. Faqat DOCUMENT_EVIDENCE faktlari va LEGAL_EVIDENCE "
             "normalaridan foydalaning. Murojaatdagi sana, son va nomlarni o‘zgartirmang. "
             "Huquqiy xulosada faqat L manba identifikatorlarini ishlating. Placeholder zarur "

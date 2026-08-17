@@ -162,14 +162,14 @@ def test_admin_and_xodim_get_the_same_grounded_compound_result(
 def test_provider_failure_still_returns_both_compound_articles(
         client, xodim_headers, indexed_law, monkeypatch):
     """The original defect: the extractive fallback kept only the first source."""
-    from app.services.groq import groq
+    from app.services.llm import llm
 
     async def unavailable(*_args, **_kwargs):
         from fastapi import HTTPException
         raise HTTPException(429, "AI xizmati band")
 
-    monkeypatch.setattr(groq, "generate_structured", unavailable)
-    monkeypatch.setattr(groq, "generate", unavailable)
+    monkeypatch.setattr(llm, "generate_structured", unavailable)
+    monkeypatch.setattr(llm, "generate", unavailable)
     result = ask(
         client, xodim_headers,
         "Dominant korxona raqobatga qarshi kelishuv qilsa qaysi normalar tegishli?",

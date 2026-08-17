@@ -83,11 +83,34 @@ class AiResponse(BaseModel):
     structured: dict | None = None
 
 
+class LlmProviderStatusOut(BaseModel):
+    """Administrator-only provider diagnostics.
+
+    Deliberately carries no base URL and no credential: state, model name and a
+    safe message are enough to diagnose, and this must never leak an internal
+    address even to an administrator's browser.
+    """
+
+    name: str
+    label: str
+    role: Literal["primary", "fallback"]
+    state: Literal["not_configured", "unreachable", "unauthorized", "model_missing", "ready"]
+    model: str | None = None
+    detail: str = ""
+    reachable: bool = False
+    model_loaded: bool = False
+
+
 class SystemStatusOut(BaseModel):
     api: Literal["ready"] = "ready"
     embedding_state: Literal["idle", "loading", "ready", "error"]
     embedding_message: str
     embedding_model: str
+    llm_provider: str = "groq"
+    llm_fallback_enabled: bool = False
+    llm_configured: bool = False
+    llm_active_model: str | None = None
+    llm_providers: list[LlmProviderStatusOut] = []
     groq_key_configured: bool
     groq_model_configured: bool
     groq_active_model: str | None = None

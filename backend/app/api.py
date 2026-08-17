@@ -19,15 +19,15 @@ from .models import (AiHistory, AuditLog, Chunk, Document, NhhDocument,
 from .schemas import (AiResponse, AnalysisRequest, AuditOut, ChatRequest, DocumentOut,
                       DraftRequest, HistoryOut, NhhOut, NhhUpdate, TaskCreate, TaskEventOut,
                       TaskOut, TaskUpdate, TokenOut, UserCreate, UserOut, UserUpdate,
-                      SystemStatusOut, AiReadinessOut, OrganizationProfileOut,
-                      OrganizationProfileUpdate)
+                      SystemStatusOut, AiReadinessOut, LlmProviderStatusOut,
+                      OrganizationProfileOut, OrganizationProfileUpdate)
 from .security import create_token, current_user, hash_password, require_roles, verify_password
 from .services.documents import MIMES, receive_upload
 from .services.document_analysis import analyze_contradictions
 from .services.document_qa import answer_document_question
 from .services.drafting import create_response_letter
 from .services.export import make_docx, make_internal_evidence_docx
-from .services.groq import groq
+from .services.llm import llm
 from .services.ai_agent import (distinct_source_chunks, grounded_context,
                                 generate_grounded_document, generate_grounded_legal,
                                 has_legal_intent, prefer_article_starts, run_chat,
@@ -192,7 +192,9 @@ def ai_readiness(_: User = Depends(current_user), db: Session = Depends(get_db))
         NhhDocument.is_active.is_(True), NhhDocument.indexed.is_(True)
     )) or 0
     legal_ready = legal_sources > 0 and embedding["state"] == "ready"
-    general_ready = bool(get_settings().groq_api_key and get_settings().groq_model_list)
+    # Employee-facing readiness stays provider-agnostic: no endpoint, model or
+    # credential detail ever reaches this response.
+    general_ready = llm.configured
     if legal_ready:
         return AiReadinessOut(legal_ready=True, general_ready=general_ready,
                               status="ready", message="Huquqiy yordam tayyor")
@@ -204,20 +206,37 @@ def ai_readiness(_: User = Depends(current_user), db: Session = Depends(get_db))
 
 
 @router.get("/system/status", response_model=SystemStatusOut)
-def system_status(user: User = Depends(require_roles(Role.administrator)), db: Session = Depends(get_db)):
+async def system_status(user: User = Depends(require_roles(Role.administrator)),
+                        db: Session = Depends(get_db)):
     embedding = embeddings.status()
     accessible_stmt = select(func.count(Document.id))
     if user.role != Role.administrator:
         accessible_stmt = accessible_stmt.where(
             or_(Document.owner_id == user.id, Document.is_confidential.is_(False))
         )
+    # Provider diagnostics deliberately carry no base URL and no credential:
+    # an administrator gets state and model name only.
+    provider_health = await llm.health()
+    providers = [
+        LlmProviderStatusOut(
+            name=item.name, label=item.label, state=item.state, model=item.model,
+            detail=item.detail, reachable=item.reachable, model_loaded=item.model_loaded,
+            role="primary" if index == 0 else "fallback",
+        )
+        for index, item in enumerate(provider_health)
+    ]
     return SystemStatusOut(
         embedding_state=embedding["state"],
         embedding_message=embedding["message"],
         embedding_model=get_settings().embedding_model,
+        llm_provider=llm.provider_name,
+        llm_fallback_enabled=get_settings().llm_fallback_enabled,
+        llm_configured=llm.configured,
+        llm_active_model=llm.active_model,
+        llm_providers=providers,
         groq_key_configured=bool(get_settings().groq_api_key),
         groq_model_configured=bool(get_settings().groq_model_list),
-        groq_active_model=groq.active_model if get_settings().groq_api_key else None,
+        groq_active_model=llm.active_model if llm.provider_name == "groq" else None,
         groq_models_configured=len(get_settings().groq_model_list),
         active_nhh_documents=db.scalar(
             select(func.count(NhhDocument.id)).where(
@@ -554,7 +573,7 @@ async def create_draft(payload: DraftRequest, user: User = Depends(current_user)
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
                 "Maxfiy hujjat asosidagi generativ loyiha uchun tasdiqlangan lokal AI xizmati sozlanmagan",
             )
-        answer = await groq.generate(system, prompt)
+        answer = await llm.generate(system, prompt)
     item = history_record(db, user, payload.kind, payload.instruction, answer, sources,
                           document.id if document else None,
                           result_status="fallback" if result_kind == "source_matches" else "success")

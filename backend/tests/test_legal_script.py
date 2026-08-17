@@ -10,7 +10,7 @@ import pytest
 from app.services.ai_agent import generate_grounded_legal
 from app.services.grounding import (CYRILLIC_RE, extractive_legal_fallback,
                                     latin_legal_answer)
-from app.services.groq import groq
+from app.services.llm import llm
 
 SOURCES = [{
     "citation_number": 1,
@@ -45,7 +45,7 @@ async def test_generated_legal_answer_is_latin_even_when_provider_mirrors_cyrill
             "source_ids": ["L1"],
         }]}
 
-    monkeypatch.setattr(groq, "generate_structured", cyrillic_provider)
+    monkeypatch.setattr(llm, "generate_structured", cyrillic_provider)
     result = await generate_grounded_legal("system", "prompt", SOURCES,
                                            question="ustun mavqe mezonlari")
     assert result.result_kind == "ok"

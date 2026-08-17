@@ -15,6 +15,21 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
     max_upload_mb: int = 20
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174"
+    # Which OpenAI-compatible endpoint answers first: "local" (self-hosted vLLM)
+    # or "groq". A second provider is only ever tried when explicitly enabled.
+    llm_provider: str = "groq"
+    llm_fallback_enabled: bool = False
+    llm_force_unavailable: bool = False
+
+    local_llm_base_url: str = ""
+    local_llm_api_key: str = ""
+    local_llm_model: str = "openai/gpt-oss-20b"
+    local_llm_models: str = ""
+    local_llm_timeout_seconds: float = 120.0
+    local_llm_max_tokens: int = 3200
+    local_llm_strict_schema: bool = True
+    local_llm_reasoning_effort: str = ""
+
     groq_api_key: str = ""
     groq_model: str = ""
     groq_models: str = (
@@ -51,6 +66,21 @@ class Settings(BaseSettings):
                 model for model in configured if model != self.groq_model
             ]
         return list(dict.fromkeys(configured))
+
+    @property
+    def local_llm_model_list(self) -> list[str]:
+        """Primary local model first, then any additional models the server serves."""
+        configured = [item.strip() for item in self.local_llm_models.split(",") if item.strip()]
+        if self.local_llm_model:
+            configured = [self.local_llm_model.strip()] + [
+                model for model in configured if model != self.local_llm_model.strip()
+            ]
+        return [model for model in dict.fromkeys(configured) if model]
+
+    @property
+    def llm_force_unavailable_effective(self) -> bool:
+        # `GROQ_FORCE_UNAVAILABLE` predates the provider abstraction and still works.
+        return self.llm_force_unavailable or self.groq_force_unavailable
 
 
 @lru_cache
