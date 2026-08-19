@@ -50,7 +50,8 @@ def clean_database(monkeypatch):
             return "Hujjatning qisqacha mazmuni tayyorlandi [1]."
         return "Berilgan manbalar asosida tekshirilgan javob [1]."
 
-    async def fake_generate_structured(system: str, user: str, schema: dict) -> dict:
+    async def fake_generate_structured(system: str, user: str, schema: dict,
+                                       **_options) -> dict:
         # Invoke the currently installed generator so per-test provider/error
         # monkeypatches still exercise the same degradation path.
         raw = await llm.generate(system, user)

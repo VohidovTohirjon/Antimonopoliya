@@ -1,6 +1,7 @@
 import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from functools import lru_cache
 
 
 CYRILLIC_TO_LATIN = str.maketrans({
@@ -24,6 +25,7 @@ CRITERIA_TERMS = (
 )
 
 
+@lru_cache(maxsize=2048)
 def normalize_legal_text(value: str) -> str:
     return (re.sub(r"\s+", " ", value.lower().translate(CYRILLIC_TO_LATIN))
             .replace("’", "'").replace("‘", "'").replace("ʻ", "'")
@@ -76,7 +78,13 @@ class LegalConcepts:
         return len(self.distinct_topics) > 1
 
 
+@lru_cache(maxsize=1024)
 def legal_concepts(value: str) -> LegalConcepts:
+    """Parse the legal concepts named in a question.
+
+    Memoized because the retrieval ranker re-scores the same query against every
+    candidate chunk; the result is a frozen dataclass so sharing it is safe.
+    """
     normalized = normalize_legal_text(value)
     dominant = any(re.search(pattern, normalized) for pattern in DOMINANCE_PATTERNS)
     negotiation = "ustun muzokara" in normalized

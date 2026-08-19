@@ -1,5 +1,6 @@
 import re
 import logging
+import time
 from dataclasses import dataclass
 
 from fastapi import HTTPException
@@ -15,8 +16,8 @@ from .grounding import (article_label, extractive_document_fallback,
                         extractive_legal_fallback, latin_legal_answer, used_sources,
                         repair_document_citations, validate_cited_answer,
                         validate_legal_answer)
-from .rag import (filter_legal_topic, legal_lexical_fallback, search_async,
-                  sources_from_chunks, clean_excerpt)
+from .rag import (_has_topical_overlap, _requested_article_number, filter_legal_topic,
+                  legal_lexical_fallback, search_async, sources_from_chunks, clean_excerpt)
 
 
 LEGAL_INTENT_PATTERNS = (
@@ -280,6 +281,7 @@ async def generate_grounded_legal(system: str, prompt: str,
                                   question: str = "",
                                   additional_evidence: str = "",
                                   compact_prompt: str | None = None,
+                                  budget_kind: str = "legal",
                                   allow_external: bool = True) -> GroundedGeneration:
     """Bounded generate -> validate -> one correction -> extractive fallback pipeline."""
     if not allow_external:
@@ -290,6 +292,7 @@ async def generate_grounded_legal(system: str, prompt: str,
             "confidential_external_blocked",
         )
     last_violations: tuple[str, ...] = ()
+    budget = get_settings().max_tokens_for(budget_kind)
     try:
         for attempt in range(2):
             request = re.sub(r"\[MANBA\s+(\d+)\]", r"[L\1]", prompt)
@@ -303,7 +306,7 @@ async def generate_grounded_legal(system: str, prompt: str,
                 system + " Javobni answer_blocks tuzilmasida qaytaring. Har bir blokda faqat "
                 "manbada mavjud da'voni yozing va L1, L2 ko‘rinishidagi source_ids bering. "
                 "O‘zbek lotin yozuvida tabiiy va ixcham bayon qiling.",
-                request, LEGAL_ANSWER_SCHEMA,
+                request, LEGAL_ANSWER_SCHEMA, max_tokens=budget,
             )
             rendered = _render_legal_blocks(structured, sources)
             if not rendered:
@@ -328,6 +331,17 @@ async def generate_grounded_legal(system: str, prompt: str,
                 "Grounding validation failed request_type=legal attempt=%s violations=%s",
                 attempt + 1, "; ".join(last_violations),
             )
+            # A factual grounding failure (invented article, citation, number, date,
+            # quote or legal identifier) is not worth a second generation: the
+            # verified extractive answer is both faster and safer. Only a
+            # presentation-level problem earns a correction round.
+            repairable = validation.repairable if validation.violations else bool(uncovered)
+            if not repairable:
+                logger.info(
+                    "Skipping correction call request_type=legal reason=hard_grounding_failure "
+                    "codes=%s", ",".join(validation.codes),
+                )
+                break
     except HTTPException as exc:
         reason = _failure_reason(exc)
         answer, verified = extractive_legal_fallback(sources, question=question)
@@ -355,6 +369,7 @@ async def generate_grounded_document(system: str, prompt: str,
             "confidential_external_blocked",
         )
     last_violations: tuple[str, ...] = ()
+    budget = get_settings().max_tokens_for("document")
     try:
         for attempt in range(2):
             request = prompt
@@ -364,7 +379,8 @@ async def generate_grounded_document(system: str, prompt: str,
                     "har bir fakt yoki xulosadan keyin mos [1] citation yozing:\n- "
                     + "\n- ".join(last_violations)
                 )
-            generated = await llm.generate(system, request, temperature=0.0)
+            generated = await llm.generate(system, request, temperature=0.0,
+                                           max_tokens=budget)
             generated = repair_document_citations(generated, sources)
             validation = validate_cited_answer(generated, sources)
             if validation.valid:
@@ -375,6 +391,14 @@ async def generate_grounded_document(system: str, prompt: str,
                     None,
                 )
             last_violations = validation.violations
+            # Same rule as the legal path: only a missing-citation style problem is
+            # worth re-prompting. An unsupported number goes straight to evidence.
+            if not validation.repairable:
+                logger.info(
+                    "Skipping correction call request_type=document "
+                    "reason=hard_grounding_failure codes=%s", ",".join(validation.codes),
+                )
+                break
     except HTTPException as exc:
         answer, verified = extractive_document_fallback(
             sources, "AI tahlili yaratilmadi; asl hujjat parchalari ko‘rsatildi."
@@ -425,16 +449,49 @@ def source_based_draft(title: str, instruction: str, base: str, sources: list[di
     return "\n".join(lines)
 
 
-async def run_chat(db: Session, user: User, question: str, requested_legal: bool) -> ChatOutcome:
-    inferred_legal = has_legal_intent(question)
-    legal = requested_legal or inferred_legal
-    routed = inferred_legal and not requested_legal
+def _evidence_is_on_topic(question: str, chunks: list[Chunk]) -> bool:
+    """Guard against a semantically-close but topically-unrelated law.
+
+    A question the concept model does not recognise ("Konstitutsiyada nechta modda
+    bor?") can still clear the vector similarity floor against an unrelated statute,
+    because legal texts resemble each other. When the question names no known legal
+    concept, no explicit article, and shares no subject-matter word with any selected
+    chunk, there is no evidence — only resemblance. Retrieval thresholds are
+    untouched; this only refuses to present the result as authority.
+    """
+    if not chunks:
+        return False
+    concepts = legal_concepts(question)
+    if concepts.distinct_topics or _requested_article_number(question):
+        return True
+    return any(_has_topical_overlap(question, chunk) for chunk in chunks)
+
+
+async def run_chat(db: Session, user: User, question: str, mode: str = "legal") -> ChatOutcome:
+    """Answer one chat request in the mode the user explicitly selected.
+
+    The mode is a contract, not a hint. "general" never becomes legal RAG just
+    because the text mentions a law, a modda or the constitution: legal-intent
+    inference is confined to the opt-in "auto" mode.
+    """
+    started = time.monotonic()
+    inferred_legal = has_legal_intent(question) if mode == "auto" else False
+    legal = mode == "legal" or (mode == "auto" and inferred_legal)
+    routed = mode == "auto" and inferred_legal
     if not legal:
+        # A genuinely general question never touches vector retrieval, legal topic
+        # filtering, article deduplication or grounding: one generation, nothing else.
         answer = await llm.generate(
             "Siz Raqobat qo‘mitasi ichki AI yordamchisisiz. O‘zbek lotin alifbosida qisqa va aniq "
             "javob bering. Fakt uydirmang. Normativ-huquqiy da’voni manbasiz tasdiqlangan fakt sifatida "
             "taqdim etmang.",
             question,
+            max_tokens=get_settings().max_tokens_for("general"),
+        )
+        logger.info(
+            "chat mode=general provider=%s model=%s llm_calls=1 retrieval_calls=0 "
+            "elapsed_ms=%s", llm.provider_name, llm.active_model,
+            round((time.monotonic() - started) * 1000),
         )
         return ChatOutcome(answer, [], "ok", None, "general_chat", "general", False)
 
@@ -444,9 +501,11 @@ async def run_chat(db: Session, user: User, question: str, requested_legal: bool
             NhhDocument.is_active.is_(True), NhhDocument.indexed.is_(True)
         )
     ) or 0
+    retrieval_started = time.monotonic()
     chunks = await search_async(db, question, user, "nhh", None, 12) if corpus_count else []
     if corpus_count and not chunks:
         chunks = legal_lexical_fallback(db, question, 12)
+    retrieval_ms = round((time.monotonic() - retrieval_started) * 1000)
     requested_article = re.search(
         r"\b(\d{1,3})\s*[-‐‑‒–—.]?\s*(?:modda(?:si|ning|ga|da)?|модда(?:си|нинг|га|да)?)\b",
         question, re.IGNORECASE,
@@ -464,6 +523,10 @@ async def run_chat(db: Session, user: User, question: str, requested_legal: bool
         )]
     chunks = filter_legal_topic(chunks, question)
     selected = prefer_article_starts(db, distinct_source_chunks(chunks, limit=3))
+    if selected and not _evidence_is_on_topic(question, selected):
+        logger.info("chat mode=legal dropped_offtopic_evidence=%s",
+                    [chunk.article_clause for chunk in selected])
+        selected = []
     sources = expand_article_sources(db, selected, sources_from_chunks(selected))
     if not selected:
         if corpus_count == 0:
@@ -480,6 +543,11 @@ async def run_chat(db: Session, user: User, question: str, requested_legal: bool
                 "tegishli NHHni bazaga qo‘shing."
             )
             result_kind = "no_sources"
+        logger.info(
+            "chat mode=legal provider=%s model=%s llm_calls=0 retrieval_ms=%s "
+            "result_kind=%s sources=0 elapsed_ms=%s", llm.provider_name, llm.active_model,
+            retrieval_ms, result_kind, round((time.monotonic() - started) * 1000),
+        )
         return ChatOutcome(answer, [], result_kind, warning, "legal_chat", "legal", routed)
 
     settings = get_settings()
@@ -517,4 +585,10 @@ async def run_chat(db: Session, user: User, question: str, requested_legal: bool
         answer = source_matches_answer(sources, question)
         result_kind = "source_matches"
         warning = "AI xizmati vaqtincha mavjud emas. Tekshirilgan huquqiy manbalar ko‘rsatildi."
+    logger.info(
+        "chat mode=legal provider=%s model=%s llm_used=%s retrieval_ms=%s result_kind=%s "
+        "sources=%s elapsed_ms=%s", llm.provider_name, llm.active_model,
+        not bool(deterministic), retrieval_ms, result_kind, len(sources),
+        round((time.monotonic() - started) * 1000),
+    )
     return ChatOutcome(answer, sources, result_kind, warning, "legal_chat", "legal", routed)

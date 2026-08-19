@@ -174,13 +174,14 @@ class OpenAICompatibleProvider:
         return {"reasoning_effort": self.profile.reasoning_effort} if self.profile.reasoning_effort else {}
 
     def _payload(self, model: str, system: str, user: str, temperature: float,
-                 response_schema: dict | None, *, allow_strict_schema: bool = True) -> dict:
+                 response_schema: dict | None, *, allow_strict_schema: bool = True,
+                 max_tokens: int | None = None) -> dict:
         payload = {
             "model": model,
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": user}],
             "temperature": temperature,
-            self.profile.max_tokens_field: self.profile.max_tokens,
+            self.profile.max_tokens_field: max_tokens or self.profile.max_tokens,
         }
         payload.update(self._reasoning_fields(model))
         if not response_schema:
@@ -242,6 +243,7 @@ class OpenAICompatibleProvider:
     async def generate(self, system: str, user: str, *, temperature: float = 0.15,
                        response_schema: dict | None = None,
                        request_type: str | None = None,
+                       max_tokens: int | None = None,
                        _excluded_models: set[str] | None = None) -> str:
         profile = self.profile
         diagnostic_type = request_type or ("structured" if response_schema else "text")
@@ -269,7 +271,7 @@ class OpenAICompatibleProvider:
             allow_strict = True
             for attempt in range(2):
                 payload = self._payload(model, system, user, temperature, response_schema,
-                                        allow_strict_schema=allow_strict)
+                                        allow_strict_schema=allow_strict, max_tokens=max_tokens)
                 started = time.monotonic()
                 try:
                     response = await self._post(payload)
@@ -388,12 +390,13 @@ class OpenAICompatibleProvider:
             "AI xizmatidan vaqtincha javob olinmadi. Qayta urinib ko‘ring",
         )
 
-    async def generate_structured(self, system: str, user: str, schema: dict) -> dict:
+    async def generate_structured(self, system: str, user: str, schema: dict, *,
+                                  max_tokens: int | None = None) -> dict:
         tried: set[str] = set()
         for _ in self.profile.models:
             content = await self.generate(
                 system, user, temperature=0.0, response_schema=schema,
-                request_type="structured", _excluded_models=tried,
+                request_type="structured", max_tokens=max_tokens, _excluded_models=tried,
             )
             if self._last_model_used:
                 tried.add(self._last_model_used)
@@ -503,9 +506,12 @@ class LlmRouter:
         return await self._run(lambda provider: provider.generate(system, user, **options),
                                request_type)
 
-    async def generate_structured(self, system: str, user: str, schema: dict) -> dict:
+    async def generate_structured(self, system: str, user: str, schema: dict, *,
+                                  max_tokens: int | None = None) -> dict:
         return await self._run(
-            lambda provider: provider.generate_structured(system, user, schema), "structured")
+            lambda provider: provider.generate_structured(system, user, schema,
+                                                          max_tokens=max_tokens),
+            "structured")
 
     async def health(self) -> list[ProviderHealth]:
         results: list[ProviderHealth] = []

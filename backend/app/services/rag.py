@@ -3,6 +3,7 @@ import hashlib
 import math
 import re
 import threading
+from functools import lru_cache
 
 from fastapi import HTTPException, status
 from sqlalchemy import delete, select, text
@@ -191,6 +192,7 @@ UZBEK_CYRILLIC_TO_LATIN = str.maketrans({
 })
 
 
+@lru_cache(maxsize=2048)
 def _normalize_uzbek(value: str) -> str:
     return (value.lower().translate(UZBEK_CYRILLIC_TO_LATIN)
             .replace("’", "'").replace("‘", "'").replace("ʻ", "'").replace("`", "'"))
@@ -203,12 +205,63 @@ def _stem_uzbek(token: str) -> str:
     return token
 
 
-def _tokens(value: str) -> set[str]:
+@lru_cache(maxsize=2048)
+def _token_set(value: str) -> frozenset[str]:
     normalized = _normalize_uzbek(value)
-    return {
+    return frozenset(
         _stem_uzbek(token) for token in re.findall(r"[a-z0-9']+", normalized)
         if len(token) > 2 and token not in STOP_WORDS
-    }
+    )
+
+
+def _tokens(value: str) -> set[str]:
+    # The query is re-scored against every candidate chunk, so the tokenizer result
+    # is memoized. A fresh set is handed back so no caller can mutate the cache.
+    return set(_token_set(value))
+
+
+# Structural legal vocabulary occurs in every normative document, so an overlap on
+# these words alone says nothing about topical relevance. They still participate in
+# ranking; they may just not be the sole reason a chunk is admitted as evidence.
+STRUCTURAL_LEGAL_TOKENS = frozenset({
+    "modda", "moddasi", "moddada", "moddalar", "moddalari", "modda", "modda",
+    "band", "bandi", "bandida", "bandlar", "qism", "qismi", "statya",
+    "nechta", "necha", "qancha", "hujjat", "hujjati", "hujjatlar",
+})
+
+
+def _topical_tokens(value: str) -> set[str]:
+    """Query tokens that actually carry subject matter."""
+    return _tokens(value) - STRUCTURAL_LEGAL_TOKENS
+
+
+def _has_topical_overlap(query: str, chunk: Chunk) -> bool:
+    """True when query and chunk share at least one subject-matter word.
+
+    Without this, "Konstitutsiyada nechta modda bor?" matches an unrelated
+    competition-law article purely because both contain the word "modda", and the
+    unrelated law is then presented as authoritative evidence.
+    """
+    topical = _topical_tokens(query)
+    if not topical:
+        return False
+    title = chunk.nhh.title if chunk.nhh else (chunk.document.filename if chunk.document else "")
+    haystack = _token_set(f"{title} {chunk.article_clause or ''} {chunk.text}")
+    return bool(topical & haystack)
+
+
+def _requested_article_number(query: str) -> str | None:
+    match = re.search(r"\b(\d{1,3})\s*[-‐‑‒–—.]?\s*(?:modda|модда|статья)\b", query, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def _matches_requested_article(query: str, chunk: Chunk) -> bool:
+    """An explicitly requested article number stays admissible on its own."""
+    number = _requested_article_number(query)
+    if not number:
+        return False
+    return bool(re.search(rf"\b{re.escape(number)}\s*[-‐‑‒–—.]?\s*(?:modda|модда|статья)\b",
+                          f"{chunk.article_clause or ''} {chunk.text[:180]}", re.IGNORECASE))
 
 
 def _lexical_score(query: str, chunk: Chunk) -> float:
@@ -401,11 +454,14 @@ def _search_with_vector(db: Session, query: str, vector: list[float], user: User
     maintenance_penalties = {item.id: _maintenance_penalty(query, item) for item in candidates}
     intent_scores = {item.id: _legal_intent_score(query, item) if corpus_type == "nhh" else 0.0
                      for item in candidates}
+    # Lexical/title overlap may only admit a chunk when it is topical: a shared
+    # structural word such as "modda" is not evidence of relevance.
     candidates = [
         item for item in candidates
         if semantic_scores[item.id] >= get_settings().retrieval_min_score
-        or lexical_scores[item.id] >= 0.22
         or intent_scores[item.id] > 0
+        or (lexical_scores[item.id] >= 0.22 and _has_topical_overlap(query, item))
+        or _matches_requested_article(query, item)
     ]
     def stable_rank(item: Chunk):
         score = (
@@ -452,7 +508,10 @@ def legal_lexical_fallback(db: Session, query: str, limit: int = 10) -> list[Chu
         title = _title_score(query, chunk)
         intent = _legal_intent_score(query, chunk)
         score = lexical + title + intent - _maintenance_penalty(query, chunk)
-        if lexical >= 0.18 or title >= 0.3 or intent > 0:
+        topical = _has_topical_overlap(query, chunk)
+        if (intent > 0
+                or _matches_requested_article(query, chunk)
+                or ((lexical >= 0.18 or title >= 0.3) and topical)):
             scored.append((score, chunk))
     scored.sort(key=lambda item: (-round(item[0], 12), item[1].nhh_id or "",
                                   item[1].article_clause or "", item[1].chunk_order, item[1].id))

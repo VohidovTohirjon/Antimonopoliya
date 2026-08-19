@@ -26,12 +26,28 @@ LEGAL_TITLE_RE = re.compile(
 )
 
 
+# Machine-readable violation kinds. A "repairable" failure means the evidence itself
+# is sound and only the presentation went wrong, so one cheap correction round is
+# worth its latency. Everything else means the model asserted something the evidence
+# does not support; re-prompting is unlikely to help and the verified extractive
+# answer is both faster and safer.
+REPAIRABLE_VIOLATIONS = frozenset({
+    "schema_invalid", "coverage_incomplete", "citation_missing", "article_uncited",
+})
+
+
 @dataclass(frozen=True)
 class GroundingValidation:
     valid: bool
     answer: str
     used_citation_ids: tuple[int, ...]
     violations: tuple[str, ...]
+    codes: tuple[str, ...] = ()
+
+    @property
+    def repairable(self) -> bool:
+        """True when every failure is a presentation problem, not a factual one."""
+        return bool(self.codes) and all(code in REPAIRABLE_VIOLATIONS for code in self.codes)
 
 
 def normalize_text(value: str) -> str:
@@ -135,42 +151,50 @@ def validate_legal_answer(answer: str, sources: list[dict],
     allowed_ids = set(sources_by_id)
     used_ids = _citations(checked)
     violations: list[str] = []
+    codes: list[str] = []
+
+    def fail(code: str, message: str) -> None:
+        codes.append(code)
+        violations.append(message)
 
     invalid_citations = sorted(set(used_ids) - allowed_ids)
     if invalid_citations:
-        violations.append("Mavjud bo‘lmagan citation: " + ", ".join(map(str, invalid_citations)))
+        fail("citation_invalid",
+             "Mavjud bo‘lmagan citation: " + ", ".join(map(str, invalid_citations)))
     if sources and not used_ids:
-        violations.append("Javobda tekshirilgan manba citation’i yo‘q")
+        fail("citation_missing", "Javobda tekshirilgan manba citation’i yo‘q")
 
     for line in checked.splitlines():
         if ARTICLE_RE.search(line) and not _citations(line):
-            violations.append("Modda ko‘rsatilgan bandning o‘zida citation yo‘q")
+            fail("article_uncited", "Modda ko‘rsatilgan bandning o‘zida citation yo‘q")
 
     allowed_articles = _allowed_article_numbers(sources)
     generated_articles = {int(match.group(1)) for match in ARTICLE_RE.finditer(checked)}
     invented_articles = sorted(generated_articles - allowed_articles)
     if invented_articles:
-        violations.append("Dalilda yo‘q modda: " + ", ".join(map(str, invented_articles)))
+        fail("article_unsupported",
+             "Dalilda yo‘q modda: " + ", ".join(map(str, invented_articles)))
 
     allowed_document_ids = _allowed_document_ids(sources)
     generated_document_ids = {normalize_text(match.group(0)) for match in DOCUMENT_ID_RE.finditer(checked)}
     invented_document_ids = sorted(generated_document_ids - allowed_document_ids)
     if invented_document_ids:
-        violations.append("Dalilda yo‘q hujjat raqami: " + ", ".join(invented_document_ids))
+        fail("document_id_unsupported",
+             "Dalilda yo‘q hujjat raqami: " + ", ".join(invented_document_ids))
 
     for match in LEGAL_YEAR_RE.finditer(checked):
         year = normalize_text(match.group(0))
         if not any(year in normalize_text(source.get("excerpt") or "") for source in sources):
-            violations.append(f"Dalilda yo‘q huquqiy sana: {year}")
+            fail("date_unsupported", f"Dalilda yo‘q huquqiy sana: {year}")
 
     for match in LEGAL_TITLE_RE.finditer(checked):
         candidate = match.group(0).strip(" ,:;\"“”")
         if not _title_is_allowed(candidate, sources):
-            violations.append(f"Dalilda yo‘q hujjat nomi: {candidate}")
+            fail("title_unsupported", f"Dalilda yo‘q hujjat nomi: {candidate}")
 
     for match in QUOTED_RE.finditer(checked):
         if not _quote_is_supported(match.group(1), checked, sources_by_id):
-            violations.append("Citation bilan berilgan iqtibos manba parchasida topilmadi")
+            fail("quote_unsupported", "Citation bilan berilgan iqtibos manba parchasida topilmadi")
 
     evidence_text = additional_evidence + "\n" + "\n".join(
         f"{source.get('document_name') or ''} {source.get('article_or_clause') or ''} "
@@ -178,13 +202,14 @@ def validate_legal_answer(answer: str, sources: list[dict],
     )
     unsupported_numbers = _unsupported_numbers(checked, evidence_text)
     if unsupported_numbers:
-        violations.append("Dalillarda yo‘q raqam: " + ", ".join(unsupported_numbers))
+        fail("number_unsupported", "Dalillarda yo‘q raqam: " + ", ".join(unsupported_numbers))
 
     return GroundingValidation(
         valid=not violations,
         answer=checked,
         used_citation_ids=tuple(value for value in used_ids if value in allowed_ids),
         violations=tuple(dict.fromkeys(violations)),
+        codes=tuple(dict.fromkeys(codes)),
     )
 
 
@@ -199,10 +224,13 @@ def validate_cited_answer(answer: str, sources: list[dict]) -> GroundingValidati
     allowed_ids = {source["citation_number"] for source in sources}
     used_ids = _citations(checked)
     violations: list[str] = []
+    codes: list[str] = []
     invalid = sorted(set(used_ids) - allowed_ids)
     if invalid:
+        codes.append("citation_invalid")
         violations.append("Mavjud bo‘lmagan citation: " + ", ".join(map(str, invalid)))
     if sources and not used_ids:
+        codes.append("citation_missing")
         violations.append("Javobda hujjat parchasiga citation yo‘q")
     sources_by_id = {source["citation_number"]: source for source in sources}
     # Markdown commonly places `[1]` after the sentence-ending period. Validate at
@@ -221,6 +249,7 @@ def validate_cited_answer(answer: str, sources: list[dict]) -> GroundingValidati
         )
         unsupported = sorted(number for number in claimed_numbers if number not in evidence)
         if unsupported:
+            codes.append("number_unsupported")
             violations.append(
                 "Citation qilingan parchada raqam topilmadi: " + ", ".join(unsupported)
             )
@@ -229,6 +258,7 @@ def validate_cited_answer(answer: str, sources: list[dict]) -> GroundingValidati
         answer=checked,
         used_citation_ids=tuple(value for value in used_ids if value in allowed_ids),
         violations=tuple(violations),
+        codes=tuple(dict.fromkeys(codes)),
     )
 
 

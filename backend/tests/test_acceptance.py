@@ -337,8 +337,12 @@ def test_every_supported_nhh_category_uses_the_same_validated_workflow(
     assert "bazasi hozircha bo‘sh" in missing.json()["answer"]
 
 
-def test_legal_intent_overrides_general_mode_and_citations_stay_mapped(
+def test_auto_mode_routes_legal_intent_and_citations_stay_mapped(
         client, admin_headers, xodim_headers, monkeypatch):
+    """Legal-intent inference now belongs to the opt-in "auto" mode.
+
+    Explicit "general" is a contract and is covered by test_chat_mode_contract.
+    """
     long_article = "12-modda. Ustun mavqe mezonlari. " + (
         "Tovar bozoridagi ulush va raqobat sharoitlari rasmiy mezon sifatida tekshiriladi. " * 35
     )
@@ -357,7 +361,7 @@ def test_legal_intent_overrides_general_mode_and_citations_stay_mapped(
     response = client.post(
         "/api/chat", headers=xodim_headers,
         json={"question": "O‘zbekiston qonunchiligida ustun mavqe qaysi modda bilan belgilanadi?",
-              "legal": False},
+              "mode": "auto"},
     )
     assert response.status_code == 200, response.text
     result = response.json()

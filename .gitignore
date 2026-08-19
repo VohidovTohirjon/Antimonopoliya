@@ -13,5 +13,3 @@ tmp/
 backend/artifacts/*
 !backend/artifacts/final-pass/
 
-backend/artifacts/
-

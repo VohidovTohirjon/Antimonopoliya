@@ -133,6 +133,52 @@ def test_local_provider_calls_the_configured_endpoint_with_openai_payload(server
     assert [message["role"] for message in payload["messages"]] == ["system", "user"]
 
 
+def test_local_provider_sends_low_reasoning_effort_by_default(server, monkeypatch):
+    """gpt-oss decodes far fewer tokens at low reasoning effort."""
+    monkeypatch.setenv("LOCAL_LLM_BASE_URL", LOCAL_URL)
+    monkeypatch.setenv("LOCAL_LLM_MODEL", LOCAL_MODEL)
+    get_settings.cache_clear()
+    assert get_settings().local_llm_reasoning_effort == "low"
+    provider = OpenAICompatibleProvider(local_profile_for_tests())
+    run(provider.generate("tizim", "savol"))
+    assert server.posts[-1]["json"]["reasoning_effort"] == "low"
+    # Reasoning is never surfaced: only `content` is read back.
+    assert "include_reasoning" not in server.posts[-1]["json"]
+
+
+def test_reasoning_effort_is_configurable_for_later_tuning(server, monkeypatch):
+    monkeypatch.setenv("LOCAL_LLM_BASE_URL", LOCAL_URL)
+    monkeypatch.setenv("LOCAL_LLM_REASONING_EFFORT", "medium")
+    get_settings.cache_clear()
+    provider = OpenAICompatibleProvider(local_profile_for_tests())
+    run(provider.generate("tizim", "savol"))
+    assert server.posts[-1]["json"]["reasoning_effort"] == "medium"
+
+    # An empty value omits the field entirely for servers that reject it.
+    monkeypatch.setenv("LOCAL_LLM_REASONING_EFFORT", "")
+    get_settings.cache_clear()
+    provider = OpenAICompatibleProvider(local_profile_for_tests())
+    run(provider.generate("tizim", "savol"))
+    assert "reasoning_effort" not in server.posts[-1]["json"]
+
+
+def test_reasoning_content_is_never_returned_to_the_caller(server):
+    """A gpt-oss server may return reasoning alongside the answer; only content is used."""
+    server.post_outcome = FakeResponse(200, {"choices": [{
+        "message": {"content": "Yakuniy javob", "reasoning_content": "MAXFIY_FIKRLASH_ZANJIRI"},
+        "finish_reason": "stop"}]})
+    provider = OpenAICompatibleProvider(local_profile())
+    assert run(provider.generate("tizim", "savol")) == "Yakuniy javob"
+
+
+def test_request_specific_token_budget_overrides_the_profile_default(server):
+    provider = OpenAICompatibleProvider(local_profile())
+    run(provider.generate("tizim", "savol", max_tokens=512))
+    assert server.posts[-1]["json"]["max_tokens"] == 512
+    run(provider.generate("tizim", "savol"))
+    assert server.posts[-1]["json"]["max_tokens"] == 3200
+
+
 def test_local_provider_without_api_key_sends_no_authorization_header(server):
     provider = OpenAICompatibleProvider(local_profile())
     run(provider.generate("tizim", "savol"))

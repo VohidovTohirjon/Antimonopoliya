@@ -39,7 +39,7 @@ def test_transliteration_preserves_layout_citations_and_latin_only_text():
 
 @pytest.mark.anyio
 async def test_generated_legal_answer_is_latin_even_when_provider_mirrors_cyrillic(monkeypatch):
-    async def cyrillic_provider(_system: str, _user: str, _schema: dict) -> dict:
+    async def cyrillic_provider(_system: str, _user: str, _schema: dict, **_options) -> dict:
         return {"answer_blocks": [{
             "text": "Устун мавқе бозордаги улуш билан эътироф этилади",
             "source_ids": ["L1"],

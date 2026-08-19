@@ -1,22 +1,35 @@
 import asyncio
 from contextlib import asynccontextmanager
 
+import logging
+
 import jwt
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .api import router
-from .config import get_settings
+from .config import get_settings, validate_production_settings
 from .database import SessionLocal
 from .models import AuditLog
+from sqlalchemy import text as sa_text
+
 from .services.rag import embeddings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Refuse to serve a misconfigured production deployment rather than silently
+    # falling back to an external provider.
+    validate_production_settings(settings)
+    logger.info(
+        "startup app_env=%s llm_provider=%s llm_fallback_enabled=%s embedding_backend=%s",
+        settings.app_env, settings.llm_provider, settings.llm_fallback_enabled,
+        settings.embedding_backend,
+    )
     warmup_task = None
     if settings.embedding_warmup_on_startup:
         warmup_task = asyncio.create_task(asyncio.to_thread(embeddings.warmup))
@@ -35,7 +48,25 @@ app.include_router(router)
 
 @app.get("/api/health")
 def health():
-    return {"status": "ishlayapti", "embedding": embeddings.status()["state"]}
+    """Liveness plus cheap dependency probes.
+
+    Deliberately does NOT probe the LLM: vLLM can take minutes to load a 20B model
+    and Docker must not restart a healthy API because of that. LLM reachability is
+    reported by the administrator-only /api/system/status endpoint instead.
+    """
+    database = "ready"
+    try:
+        with SessionLocal() as db:
+            db.execute(sa_text("SELECT 1"))
+    except Exception:
+        database = "error"
+    return {
+        "status": "ishlayapti",
+        "app_env": settings.app_env,
+        "database": database,
+        "embedding": embeddings.status()["state"],
+        "llm_provider": settings.llm_provider,
+    }
 
 
 @app.middleware("http")

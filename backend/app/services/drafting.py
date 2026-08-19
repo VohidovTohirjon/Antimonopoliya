@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from fastapi import HTTPException
 
+from ..config import get_settings
 from ..models import Chunk
 from .llm import llm
 from .rag import clean_excerpt, sources_from_chunks
@@ -213,6 +214,7 @@ async def create_response_letter(instruction: str, document_chunks: list[Chunk],
             f"TOPSHIRIQ:\n{instruction}\n\nDOCUMENT_EVIDENCE:\n{document_evidence}\n\n"
             f"LEGAL_EVIDENCE:\n{legal_evidence}",
             RESPONSE_LETTER_SCHEMA,
+            max_tokens=get_settings().max_tokens_for("drafting"),
         )
         structured["kind"] = "response_letter"
         structured["review_note"] = (

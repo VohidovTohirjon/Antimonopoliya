@@ -8,21 +8,21 @@ Raqobat qo‘mitasi rahbariyati va xodimlari uchun hujjat tahlili, huquqiy RAG q
 - `backend/` — FastAPI REST API, JWT autentifikatsiya va qat’iy backend RBAC.
 - PostgreSQL + pgvector — foydalanuvchilar, hujjatlar, NHH, vektorlar, tarix, topshiriqlar va audit.
 - BGE-M3 — o‘zbekcha va huquqiy matnlarga mos alohida embedding modeli.
-- Groq — faqat serverda ishlaydigan, bitta markazlashtirilgan generatsiya provayderi.
+- LLM — bitta OpenAI-mos provayder abstraksiyasi: production'da o‘z serveringizdagi vLLM (`openai/gpt-oss-20b`), ixtiyoriy ravishda Groq. Kalitlar faqat serverda.
 - Fayllar — backend nazoratidagi `DATA_DIR` ichida saqlanadi; yuklash va AI qidiruvi ruxsat bilan cheklanadi.
 
 Jarayon: fayl → turini tekshirish → parsing → strukturali chunklar → embedding → pgvector. Savol → AI orchestrator intent tekshiruvi → ruxsat filtri → gibrid qidiruv → mavzu va relevance filtri → article/overlap deduplikatsiyasi → barqaror dalil tartibi → backend bergan citation raqamlari → cheklangan kontekst → Groq (`temperature=0`) → hujjat/modda/raqam/sana/citation/iqtibos grounding validatsiyasi → faqat haqiqatan ishlatilgan manbalar.
 
 Grounding tekshiruvi o‘tmasa tizim ko‘pi bilan bir marta cheklangan tuzatish so‘raydi. Ikkinchi urinish ham o‘tmasa generativ matn foydalanuvchiga chiqarilmaydi: faqat bazadan olingan, citation bilan bog‘langan asl parchalar aniq fallback yorlig‘i ostida ko‘rsatiladi. Shu sabab ilova “hallucination imkonsiz” deb da’vo qilmaydi; kafolat shuki, dalilda yo‘q huquqiy identifikator va citation tasdiqlangan huquqiy javob sifatida qabul qilinmaydi.
 
-Huquqiy intent UI tugmasiga bog‘liq emas: foydalanuvchi “Umumiy savol”ni tanlab qonun, modda yoki boshqa normativ masalani so‘rasa ham backend uni avtomatik ravishda NHH/RAG oqimiga o‘tkazadi. Tasdiqlangan manba topilmasa huquqiy javob generatsiya qilinmaydi.
+Foydalanuvchi tanlagan rejim — bu shartnoma, taxmin emas. `mode="general"` tanlansa savol matnida “qonun”, “modda” yoki “konstitutsiya” bo‘lsa ham so‘rov hech qachon huquqiy RAG ga o‘tkazilmaydi: aynan bitta oddiy LLM javobi qaytadi, qidiruvsiz va manbasiz. `mode="legal"` NHH korpusidan qidiradi va faqat tasdiqlangan manba asosida javob beradi; yetarli dalil bo‘lmasa boshqa qonunni manba sifatida ko‘rsatmasdan “yetarli huquqiy asos topilmadi” deb javob beradi. Avtomatik intent aniqlash faqat alohida `mode="auto"` rejimida ishlaydi.
 
 ## Talablar
 
 - Python 3.11 yoki 3.12
 - Node.js 20+
 - Docker va Docker Compose (PostgreSQL/pgvector uchun tavsiya etiladi)
-- Groq hisobidagi amaldagi API kalit va model nomi
+- Lokal vLLM (OpenAI-mos endpoint) yoki Groq API kaliti
 - BGE-M3 ni birinchi ishga tushirishda yuklash uchun internet, so‘ng model lokal keshdan ishlaydi
 
 ## Sozlash
@@ -48,6 +48,14 @@ Ilova bir vaqtning o‘zida bitta OpenAI-mos `chat/completions` endpointi bilan 
 
 Lokal serverga moslashuv nuanslari provayder profilida saqlanadi: vLLM `max_tokens` kutadi (Groq `max_completion_tokens`), Groq’ning `include_reasoning`/`reasoning_effort` kalitlari lokal serverga yuborilmaydi, va agar server strict `json_schema` formatini rad etsa, so‘rov bir marta oddiy `json_object` rejimida qayta yuboriladi (bitta modelli serverda failover uchun sherik yo‘q).
 
+### Kechikishni kamaytirish qoidalari
+
+Har bir so‘rov turi o‘z completion budjetiga ega — qisqa chat javobi ko‘p sahifali rasmiy loyiha bilan bir xil decode budjetini band qilmaydi. gpt-oss uchun `reasoning_effort=low` yuboriladi va fikrlash matni foydalanuvchiga hech qachon ko‘rsatilmaydi (faqat `content` o‘qiladi).
+
+Grounding validatsiyasidan o‘tmagan javob endi ikki xil ko‘riladi. Uydirilgan modda, citation, raqam, sana, iqtibos yoki hujjat identifikatori — bu **faktik** xato: ikkinchi generatsiya qilinmaydi, darhol tekshirilgan ekstraktiv javobga o‘tiladi (tezroq ham, xavfsizroq ham). Faqat format/sxema darajasidagi xato (citation qo‘yilmagan, blok tuzilmasi buzilgan) bitta tuzatish chaqirig‘iga arziydi.
+
+Umumiy savol vektor qidiruv, huquqiy filtr, modda deduplikatsiyasi va groundingni umuman ishga tushirmaydi — huquqiy niyat aniqlangandagina RAG yo‘liga o‘tiladi. Deterministik yo‘llar (arifmetika, aniq hujjat faktlari, 40% kabi qonuniy chegaralar) LLMsiz ishlaydi.
+
 `GROQ_MODELS` vergul bilan ajratilgan priority ro‘yxatidir. Birinchi model 429 rate-limit qaytarsa, backend `retry-after` muddatiga uni cooldown holatiga qo‘yib, shu so‘rovning o‘zida keyingi modelga o‘tadi. Muddat tugagach yuqori priority model avtomatik qayta ishlatiladi. Eski `GROQ_MODEL` qiymati berilsa, u ro‘yxatning boshiga qo‘yiladi. `GROQ_API_KEY` frontendga uzatilmaydi. Ishlab chiqarishda `DATABASE_URL`, PostgreSQL paroli, `DATA_DIR` va `CORS_ORIGINS` ham xavfsiz muhitga moslashtirilishi shart.
 
 Asosiy o‘zgaruvchilar:
@@ -66,6 +74,11 @@ Asosiy o‘zgaruvchilar:
 | `LOCAL_LLM_TIMEOUT_SECONDS` | Lokal server uchun timeout; standart `120` |
 | `LOCAL_LLM_MAX_TOKENS` | Lokal completion budjeti; standart `3200` |
 | `LOCAL_LLM_STRICT_SCHEMA` | `json_schema` structured output ishlatiladimi; standart `true` |
+| `LOCAL_LLM_REASONING_EFFORT` | gpt-oss fikrlash chuqurligi; standart `low`. Sifat yetmasa `medium` |
+| `LLM_MAX_TOKENS_GENERAL` | Umumiy chat budjeti; standart `512` |
+| `LLM_MAX_TOKENS_LEGAL` | Huquqiy javob budjeti; standart `1024` |
+| `LLM_MAX_TOKENS_DOCUMENT` | Hujjat tahlili budjeti; standart `1024` |
+| `LLM_MAX_TOKENS_DRAFTING` | Rasmiy loyiha/DOCX budjeti; standart `3200` |
 | `GROQ_API_KEY` | Serverdagi Groq API kaliti |
 | `GROQ_MODEL` | Ixtiyoriy eski bitta-model override; berilsa eng yuqori priority bo‘ladi |
 | `GROQ_MODELS` | 5 ta Groq model/system priority ro‘yxati va avtomatik failover |
@@ -213,6 +226,37 @@ Maxfiy hujjat va `Idoraviy (ichki) hujjat` matni server tomonda tashqi AI adapte
 Provider xatolari bir xil `502`ga yashirilmaydi: rate limit `429`, timeout `504`, autentifikatsiya/model yoki vaqtinchalik upstream nosozligi foydalanuvchiga xavfsiz va aniq xizmat xabari bilan qaytariladi. Bo‘sh, noto‘g‘ri formatdagi yoki token chegarasida uzilgan completion muvaffaqiyat hisoblanmaydi. `openai/gpt-oss-*` modellari uchun reasoning past darajada va foydalanuvchi javobidan alohida boshqariladi.
 
 Huquqiy javob va javob xatidagi `[1]`, `[2]` kabi raqamlar model tomonidan erkin belgilanmaydi. Backend manbalarni oldindan deduplikatsiya qilib raqamlaydi va modelga faqat shu raqamlarni beradi. Mavjud bo‘lmagan raqam javobni groundingdan yiqitadi; u shunchaki matndan o‘chirilib, qolgan gap tasdiqlanmaydi. Frontend faqat yakuniy javobda citation qilingan manbalarni ayni backend raqami bilan ko‘rsatadi. AI javobi va tarix xavfsiz Markdown/GFM rendererida ko‘rsatiladi; xom HTML bajarilmaydi.
+
+## Production deploy (bitta VM)
+
+To'liq qadamma-qadam yo'riqnoma: **[deploy/README.md](deploy/README.md)**.
+
+```bash
+cp .env.production.example .env   # va qiymatlarni to'ldiring
+./deploy/deploy.sh
+```
+
+`APP_ENV=production` bo'lganda backend ishga tushishdan oldin konfiguratsiyani
+tekshiradi: `LLM_PROVIDER` aniq ko'rsatilmagan bo'lsa yoki lokal provayder uchun
+`LOCAL_LLM_BASE_URL`/`LOCAL_LLM_MODEL` bo'sh bo'lsa, **ishga tushmaydi**. Bu
+tasodifan tashqi provayderga o'tib ketishning oldini oladi.
+
+## Rasmiy huquqiy korpus
+
+`legal-corpus/` katalogida rasmiy NHH fayllari va `manifest.json` saqlanadi.
+Korpus admin UI bilan bir xil parsing/indekslash yo'lidan import qilinadi:
+
+```bash
+cd backend && python scripts/import_nhh.py --admin-username admin
+```
+
+```bash
+cd backend && python scripts/import_nhh.py --status
+```
+
+`--status` hujjatlar soni, parchalar soni va faol/indekslangan hujjatlar sonini
+ko'rsatadi. Buyruq idempotent: mavjud hujjat qayta import qilinmaydi
+(`--reindex` bilan majburan qayta indekslash mumkin).
 
 ## Operatsion namuna ma’lumotlari
 

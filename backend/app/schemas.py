@@ -135,9 +135,24 @@ class AnalysisRequest(BaseModel):
     question: str | None = Field(default=None, max_length=3000)
 
 
+# Explicit UI selection, never inferred from the question text.
+#   general -> one plain LLM answer, no retrieval, no grounding
+#   legal   -> corpus retrieval + citations + grounding validation
+#   auto    -> opt-in legal-intent routing (not used by the current UI)
+ChatMode = Literal["general", "legal", "auto"]
+
+
 class ChatRequest(BaseModel):
     question: str = Field(min_length=2, max_length=4000)
+    mode: ChatMode | None = None
+    # Legacy field for older clients; `mode` wins whenever it is supplied.
     legal: bool = True
+
+    @property
+    def resolved_mode(self) -> ChatMode:
+        if self.mode is not None:
+            return self.mode
+        return "legal" if self.legal else "general"
 
 
 class DraftRequest(BaseModel):

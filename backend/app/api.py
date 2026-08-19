@@ -466,12 +466,14 @@ async def analyze_document(document_id: str, payload: AnalysisRequest, user: Use
 @router.post("/chat", response_model=AiResponse)
 async def chat(payload: ChatRequest, request: Request, user: User = Depends(current_user),
                db: Session = Depends(get_db)):
+    mode = payload.resolved_mode
     try:
-        outcome = await run_chat(db, user, payload.question, payload.legal)
+        outcome = await run_chat(db, user, payload.question, mode)
     except HTTPException:
         if not await request.is_disconnected():
-            history_record(db, user, "legal_chat" if payload.legal or has_legal_intent(payload.question)
-                           else "general_chat", payload.question, "", result_status="failure")
+            history_record(db, user,
+                           "general_chat" if mode == "general" else "legal_chat",
+                           payload.question, "", result_status="failure")
         raise
     if await request.is_disconnected():
         raise HTTPException(499, "So‘rov foydalanuvchi tomonidan bekor qilindi")
@@ -557,7 +559,7 @@ async def create_draft(payload: DraftRequest, user: User = Depends(current_user)
     result_kind = "ok"
     if legal_required:
         generation = await generate_grounded_legal(
-            system, prompt, sources, additional_evidence=base,
+            system, prompt, sources, additional_evidence=base, budget_kind="drafting",
             allow_external=(get_settings().allow_external_confidential_ai
                             or not (document and document.is_confidential)),
         )
@@ -573,7 +575,8 @@ async def create_draft(payload: DraftRequest, user: User = Depends(current_user)
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
                 "Maxfiy hujjat asosidagi generativ loyiha uchun tasdiqlangan lokal AI xizmati sozlanmagan",
             )
-        answer = await llm.generate(system, prompt)
+        answer = await llm.generate(system, prompt,
+                                    max_tokens=get_settings().max_tokens_for("drafting"))
     item = history_record(db, user, payload.kind, payload.instruction, answer, sources,
                           document.id if document else None,
                           result_status="fallback" if result_kind == "source_matches" else "success")

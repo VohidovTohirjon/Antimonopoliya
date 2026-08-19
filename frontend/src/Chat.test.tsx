@@ -84,4 +84,34 @@ describe('Chat reliability states', () => {
     await waitFor(() => expect(screen.queryByText('A kechikkan javobi.')).toBeNull())
     expect(screen.getByText('B javobi [1].')).not.toBeNull()
   })
+
+  it('sends the explicitly selected mode so the backend cannot re-route it', async () => {
+    const bodies: string[] = []
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, options?: RequestInit) => {
+      if ((options?.method || 'GET') === 'POST') {
+        bodies.push(String(options?.body))
+        return json(result('Javob'))
+      }
+      return json(status)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<Chat />)
+    await screen.findByText('Huquqiy yordam tayyor')
+
+    // Legal tab is the default.
+    await user.type(screen.getByRole('textbox'), 'Ustun mavqe qanday aniqlanadi?')
+    await user.click(screen.getByRole('button', { name: 'Savol yuborish' }))
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(JSON.parse(bodies[0]).mode).toBe('legal')
+
+    // Switching to "Umumiy savol" must send general, even for legal-sounding text.
+    await user.click(screen.getByRole('button', { name: 'Umumiy savol' }))
+    await screen.findByText('AI yordamchi tayyor')
+    await user.clear(screen.getByRole('textbox'))
+    await user.type(screen.getByRole('textbox'), 'O‘zbekiston Konstitutsiyasida nechta modda bor?')
+    await user.click(screen.getByRole('button', { name: 'Savol yuborish' }))
+    await waitFor(() => expect(bodies).toHaveLength(2))
+    expect(JSON.parse(bodies[1]).mode).toBe('general')
+  })
 })

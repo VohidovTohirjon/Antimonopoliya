@@ -1,4 +1,10 @@
-export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+// Same-origin by default: behind Nginx the SPA calls /api on its own host, so an
+// empty (or absent) VITE_API_URL must stay empty rather than falling back to a
+// developer machine address. Only the Vite dev server, which runs on a different
+// port than the API, needs an absolute base URL.
+export const API_URL = import.meta.env.VITE_API_URL !== undefined
+  ? import.meta.env.VITE_API_URL
+  : (import.meta.env.DEV ? 'http://localhost:8000' : '')
 
 const storage = typeof localStorage !== 'undefined' && typeof localStorage.getItem === 'function'
   ? localStorage : null
